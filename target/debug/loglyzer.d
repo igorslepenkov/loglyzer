@@ -1,0 +1,1 @@
+/home/venderart/projects/rust/loglyzer/target/debug/loglyzer: /home/venderart/projects/rust/loglyzer/src/args.rs /home/venderart/projects/rust/loglyzer/src/errors.rs /home/venderart/projects/rust/loglyzer/src/main.rs /home/venderart/projects/rust/loglyzer/src/styler.rs /home/venderart/projects/rust/loglyzer/src/utils.rs
