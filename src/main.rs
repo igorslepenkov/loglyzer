@@ -4,7 +4,7 @@ mod styler;
 mod utils;
 
 use std::{
-    fs::{self, File},
+    fs::{self, File, ReadDir},
     io::{prelude::*, stderr, BufReader, Write},
     path::PathBuf,
     process::exit,
@@ -17,8 +17,8 @@ use jmespath::Expression;
 use serde_json::Value;
 
 use crate::{
-    args::Args,
-    utils::{get_filter_exp, get_sort_exp},
+    args::{Args, ParsedArgs},
+    utils::get_file_created_date,
 };
 use crate::{
     styler::print_prittified_logs,
@@ -34,8 +34,10 @@ fn main() {
         handle_error_gracefully(err.to_string(), None)
     }
 
-    let filter = Arc::new(get_filter_exp(&args));
-    let sort_expr = Arc::new(get_sort_exp(&args));
+    let args = args.parse_args();
+
+    let filter = Arc::new(args.filter.clone());
+    let sort_expr = Arc::new(args.sort_by.clone());
 
     let mut all_dirs_result: Vec<String> = vec![];
 
@@ -65,28 +67,8 @@ fn main() {
         let entries_iter_res = fs::read_dir(dir);
 
         match entries_iter_res {
-            Ok(iter) => files_vec.extend(
-                iter.filter_map(|item| item.ok())
-                    .filter_map(|entry| {
-                        if entry.path().is_file() {
-                            Some(entry.path())
-                        } else {
-                            None
-                        }
-                    })
-                    .filter_map(|file| {
-                        let path_str =
-                            file.to_string_lossy();
-
-                        if path_str.ends_with(".log")
-                            || path_str.ends_with(".log.gz")
-                        {
-                            Some(file)
-                        } else {
-                            None
-                        }
-                    }),
-            ),
+            Ok(iter) => files_vec
+                .extend(filter_log_files(iter, &args)),
             Err(err) => {
                 let _ =
                     write!(stderr(), "{}", err.to_string());
@@ -268,4 +250,67 @@ fn process_log_file(
     }
 
     Ok(filtered_lines)
+}
+
+fn filter_log_files(
+    files: ReadDir,
+    args: &ParsedArgs,
+) -> Vec<PathBuf> {
+    let filtered = files
+        .filter_map(|item| item.ok())
+        .filter_map(|entry| {
+            if entry.path().is_file() {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .filter_map(|file| {
+            let path_str = file.to_string_lossy();
+
+            if path_str.ends_with(".log")
+                || path_str.ends_with(".log.gz")
+            {
+                Some(file)
+            } else {
+                None
+            }
+        });
+
+    match (&args.from, &args.to) {
+        (Some(from), Some(to)) => filtered
+            .filter(|file| {
+                let created = get_file_created_date(file);
+
+                match created {
+                    Some(created) => {
+                        created.gt(from) && created.le(to)
+                    }
+                    None => false,
+                }
+            })
+            .collect(),
+        (Some(from), None) => filtered
+            .filter(|file| {
+                let created = get_file_created_date(file);
+
+                match created {
+                    Some(created) => created.gt(from),
+                    None => false,
+                }
+            })
+            .collect(),
+        (None, Some(to)) => filtered
+            .filter(|file| {
+                let created = get_file_created_date(file);
+
+                match created {
+                    Some(created) => created.le(to),
+                    None => false,
+                }
+            })
+            .collect(),
+
+        (None, None) => filtered.collect(),
+    }
 }
