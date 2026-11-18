@@ -58,7 +58,7 @@ impl Args {
         Args::parse()
     }
 
-    pub fn check(&self) -> Result<(), AppError> {
+    pub fn check(self) -> Result<Self, AppError> {
         if let Some(filter) = &self.filter {
             jmespath::compile(filter)?;
         }
@@ -76,7 +76,7 @@ impl Args {
             Date::parse(to, format_description!("[year]-[month]-[day]")).map_err(|_| AppError::DateCheckError(String::from("Could not parse 'to' value. String should be valid ISO_8601 standard")))?;
         }
 
-        Ok(())
+        Ok(self)
     }
 
     pub fn parse_args(&'_ self) -> ParsedArgs<'_> {

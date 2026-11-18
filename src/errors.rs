@@ -12,6 +12,26 @@ pub enum AppError {
     #[error("JSON serialization error: {0}")]
     SerdeError(#[from] serde_json::Error),
 
+    #[error("Could not find directory: {0}")]
+    DirectoryNotFound(String),
+
+    #[error(
+        "Could not check directory existance: {0}. {1}"
+    )]
+    DirectoryExistenceCouldNotBeCheckedDueToError(
+        String,
+        String,
+    ),
+
+    #[error("Could not read available CPUs length: {0}")]
+    CouldNotReadAvailableCpusLength(String),
+
+    #[error("No available CPUs left")]
+    NoAvailableCpus(),
+
+    #[error("Could not process file. {0}")]
+    CouldNotProcessFile(String),
+
     #[error("Date expression error: {0}")]
     DateCheckError(String),
 }

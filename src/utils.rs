@@ -1,5 +1,8 @@
 use std::{
-    fs, io, path::PathBuf, thread::available_parallelism,
+    fs,
+    io::{stderr, Write},
+    path::PathBuf,
+    thread::available_parallelism,
 };
 
 use jmespath::Expression;
@@ -7,15 +10,19 @@ use time::{
     macros::format_description, Date, OffsetDateTime,
 };
 
-use crate::args::Args;
+use crate::{args::Args, errors::AppError};
 
-pub fn get_available_cpus_count() -> Result<usize, io::Error>
+pub fn get_available_cpus_count() -> Result<usize, AppError>
 {
     let available_cpus_res = available_parallelism();
 
     match available_cpus_res {
         Ok(res) => Ok(res.get()),
-        Err(err) => Err(err),
+        Err(err) => {
+            Err(AppError::CouldNotReadAvailableCpusLength(
+                err.to_string(),
+            ))
+        }
     }
 }
 
@@ -85,5 +92,38 @@ pub fn get_file_created_date(
             }
         }
         Err(_) => None,
+    }
+}
+
+pub fn check_dir_existence(
+    dir: &PathBuf
+) -> Result<(), AppError> {
+    let check = fs::exists(&dir);
+
+    match check {
+            Ok(res) => {
+                if res == false {
+                    return Err(AppError::DirectoryNotFound(dir.to_string_lossy().to_string()))
+                }
+
+                Ok(())
+            }
+            Err(err) => Err(AppError::DirectoryExistenceCouldNotBeCheckedDueToError(dir.to_string_lossy().to_string(), err.to_string()))
+        }
+}
+
+pub fn report_error(
+    err: String,
+    reason: Option<String>,
+) {
+    if let Some(reason) = reason {
+        let _ = writeln!(
+            stderr(),
+            "{}. Reason: {}",
+            err,
+            reason
+        );
+    } else {
+        let _ = writeln!(stderr(), "{}", err);
     }
 }
