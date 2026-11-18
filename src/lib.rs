@@ -207,11 +207,13 @@ fn get_log_lines(
         let (task_sender, task_receiver) = unbounded::<PathBuf>();
         let filter_arc = Arc::new(filter.clone());
 
-        scope(|scope| {
-            let wg =  WaitGroup::new();
+        for path in files_vec.drain(..) {
+            if task_sender.send(path).is_err() { break; }
+        }
+        drop(task_sender);
 
+        scope(|scope| {
             for _ in 0..available_cpus {
-                let wg = wg.clone();
                 let thread_task_receiver = task_receiver.clone();
                 let thread_result_sender = result_sender.clone();
                 let thread_filter = filter_arc.clone();
@@ -234,17 +236,11 @@ fn get_log_lines(
                             }
                         }
                     }
-
-                    drop(wg);
                 });
             }
-
-            wg.wait();
         });
 
-        drop(task_sender);
-
-
+        drop(result_sender);
 
         let dir_files_results: FileProcessingResult =
             result_receiver.iter().flatten().collect();
