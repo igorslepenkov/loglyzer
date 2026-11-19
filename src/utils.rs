@@ -1,23 +1,24 @@
 use std::{
     fs,
-    io::{stderr, Write},
+    io::{Write, stderr},
+    num::NonZeroUsize,
     path::PathBuf,
     thread::available_parallelism,
 };
 
 use jmespath::Expression;
 use time::{
-    macros::format_description, Date, OffsetDateTime,
+    Date, OffsetDateTime, macros::format_description,
 };
 
 use crate::{args::Args, errors::AppError};
 
-pub fn get_available_cpus_count() -> Result<usize, AppError>
-{
+pub fn get_available_cpus_count()
+-> Result<NonZeroUsize, AppError> {
     let available_cpus_res = available_parallelism();
 
     match available_cpus_res {
-        Ok(res) => Ok(res.get()),
+        Ok(res) => Ok(res),
         Err(err) => {
             Err(AppError::CouldNotReadAvailableCpusLength(
                 err.to_string(),

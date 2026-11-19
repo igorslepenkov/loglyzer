@@ -4,10 +4,10 @@ mod errors;
 mod styler;
 mod utils;
 
-use crossbeam::{channel::unbounded, sync::WaitGroup};
+use crossbeam::channel::unbounded;
 use std::{
     fs::{self, File, ReadDir},
-    io::{prelude::*, stderr, BufReader, Write},
+    io::{BufReader, prelude::*},
     path::PathBuf,
     sync::Arc,
     thread::scope,
@@ -17,13 +17,10 @@ pub use errors::AppError;
 use jmespath::Expression;
 use serde_json::Value;
 
+use crate::styler::print_prittified_logs;
 use crate::{
     args::{Args, ParsedArgs},
     utils::{check_dir_existence, get_file_created_date},
-};
-use crate::{
-    styler::print_prittified_logs,
-    utils::get_available_cpus_count,
 };
 
 pub use crate::utils::report_error;
@@ -31,9 +28,9 @@ pub use crate::utils::report_error;
 type FileProcessingResult = Vec<String>;
 
 pub fn run() -> Result<(), errors::AppError> {
-    let args = Args::init().check()?;
+    let args = Args::init().unwrap();
 
-    let args = args.parse_args();
+    let args = args.parse_args()?;
 
     let sort_expr = Arc::new(args.sort_by.clone());
 
@@ -64,7 +61,7 @@ pub fn run() -> Result<(), errors::AppError> {
 
 fn process_log_file(
     path: &PathBuf,
-    filter: &Arc<Option<Expression>>,
+    filter: &Option<Expression>,
 ) -> Result<FileProcessingResult, AppError> {
     println!("Processing {}", path.to_string_lossy());
 
@@ -182,86 +179,114 @@ fn get_log_lines(
     args: &ParsedArgs,
     filter: &Option<Expression>,
 ) -> Vec<String> {
-    let all_dirs_result: Vec<Result<Vec<String>, AppError>> = args.dirs.par_iter().map(|dir| {
-        let mut files_vec: Vec<PathBuf> = vec![];
+    let mut files: Vec<PathBuf> = args
+        .dirs
+        .par_iter()
+        .flat_map(|dir| {
+            let mut files_vec: Vec<PathBuf> = vec![];
 
-        check_dir_existence(dir)?;
-
-        let entries_iter_res = fs::read_dir(dir);
-
-        match entries_iter_res {
-            Ok(iter) => files_vec
-                .extend(filter_log_files(iter, &args)),
-            Err(err) => {
-                let _ =
-                    write!(stderr(), "{}", err.to_string());
+            if let Err(err) = check_dir_existence(dir) {
+                report_error(err.to_string(), None);
+                return vec![];
             }
+
+            let entries_iter_res = fs::read_dir(dir);
+
+            match entries_iter_res {
+                Ok(iter) => files_vec
+                    .extend(filter_log_files(iter, &args)),
+                Err(err) => {
+                    report_error(err.to_string(), None);
+                }
+            }
+
+            files_vec
+        })
+        .collect();
+
+    let jobs = args.jobs.get();
+    if jobs > 1 {
+        process_files_concurrently(&mut files, jobs, filter)
+    } else {
+        process_files(&mut files, filter)
+    }
+}
+
+fn process_files_concurrently(
+    files: &mut Vec<PathBuf>,
+    jobs: usize,
+    filter: &Option<Expression>,
+) -> Vec<String> {
+    let (result_sender, result_receiver) =
+        unbounded::<FileProcessingResult>();
+    let (task_sender, task_receiver) =
+        unbounded::<PathBuf>();
+
+    for path in files.drain(..) {
+        if task_sender.send(path).is_err() {
+            break;
         }
+    }
+    drop(task_sender);
 
-        let available_cpus = get_available_cpus_count()?;
-        if available_cpus == 0 {
-            return Err(AppError::NoAvailableCpus());
-        }
+    scope(|scope| {
+        for _ in 0..jobs {
+            let thread_task_receiver =
+                task_receiver.clone();
+            let thread_result_sender =
+                result_sender.clone();
 
-        let (result_sender, result_receiver) = unbounded::<FileProcessingResult>();
-        let (task_sender, task_receiver) = unbounded::<PathBuf>();
-        let filter_arc = Arc::new(filter.clone());
-
-        for path in files_vec.drain(..) {
-            if task_sender.send(path).is_err() { break; }
-        }
-        drop(task_sender);
-
-        scope(|scope| {
-            for _ in 0..available_cpus {
-                let thread_task_receiver = task_receiver.clone();
-                let thread_result_sender = result_sender.clone();
-                let thread_filter = filter_arc.clone();
-
-                scope.spawn(move || {
-                    while let Ok(file_path) = thread_task_receiver.recv() {
-                        match process_log_file(&file_path, &thread_filter) {
-                            Ok(res) => {
-                                if !res.is_empty() {
-                                    if thread_result_sender.send(res).is_err() {
-                                        break;
-                                    }
+            scope.spawn(move || {
+                while let Ok(file_path) = thread_task_receiver.recv() {
+                    match process_log_file(&file_path, filter) {
+                        Ok(res) => {
+                            if !res.is_empty() {
+                                if thread_result_sender.send(res).is_err() {
+                                    break;
                                 }
                             }
-                            Err(err) => {
-                                report_error(
-                                    format!("Error processing file {}", &file_path.to_string_lossy()),
-                                    Some(err.to_string()),
-                                );
-                            }
+                        }
+                        Err(err) => {
+                            report_error(
+                                format!("Error processing file {}", &file_path.to_string_lossy()),
+                                Some(err.to_string()),
+                            );
                         }
                     }
-                });
+                }
+            });
+        }
+    });
+
+    drop(result_sender);
+
+    result_receiver.iter().flatten().collect()
+}
+
+fn process_files(
+    files: &mut Vec<PathBuf>,
+    filter: &Option<Expression>,
+) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+
+    for file_path in files {
+        match process_log_file(&file_path, filter) {
+            Ok(res) => {
+                if !res.is_empty() {
+                    result.extend(res);
+                }
             }
-        });
-
-        drop(result_sender);
-
-        let dir_files_results: FileProcessingResult =
-            result_receiver.iter().flatten().collect();
-
-        Ok(dir_files_results)
-    }).collect();
-
-    all_dirs_result
-        .iter()
-        .flat_map(|dir_result| match dir_result {
-            Ok(dirs) => dirs.to_owned(),
             Err(err) => {
                 report_error(
-                    AppError::CouldNotProcessFile(
-                        err.to_string(),
-                    )
-                    .to_string(),
-                    None,
+                    format!(
+                        "Error processing file {}",
+                        &file_path.to_string_lossy()
+                    ),
+                    Some(err.to_string()),
                 );
-                vec![]
             }
-        })
-        .collect()
+        }
+    }
+
+    result
 }

@@ -34,4 +34,7 @@ pub enum AppError {
 
     #[error("Date expression error: {0}")]
     DateCheckError(String),
+
+    #[error("Invalid number of jobs: {0}")]
+    JobsCheckError(String),
 }

@@ -1,15 +1,18 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::Command;
+use clap::{CommandFactory, Parser, error::ErrorKind};
 use jmespath::Expression;
-use time::macros::format_description;
 use time::Date;
+use time::macros::format_description;
 
-use crate::errors::AppError;
+use crate::AppError;
 use crate::utils::{
-    get_filter_exp, get_from_date, get_sort_exp,
-    get_to_date,
+    get_available_cpus_count, get_filter_exp,
+    get_from_date, get_sort_exp, get_to_date,
 };
+
+use std::num::NonZeroUsize;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "Log analyzer")]
@@ -39,6 +42,12 @@ pub struct Args {
     /// JMESPath expression to sort the final results by
     #[arg(long)]
     pub sort_by: Option<String>,
+
+    /// Num of parallel jobs at a time
+    /// (should be greater than 0 and less than thread::available_parallelism)
+    /// Default - thread::available_parallelism
+    #[arg(short, long)]
+    pub jobs: Option<NonZeroUsize>,
 }
 
 pub struct ParsedArgs<'a> {
@@ -51,41 +60,126 @@ pub struct ParsedArgs<'a> {
     pub filter: Option<Expression<'a>>,
 
     pub sort_by: Option<Expression<'a>>,
+
+    pub jobs: NonZeroUsize,
 }
 
 impl Args {
-    pub fn init() -> Self {
-        Args::parse()
+    pub fn init() -> Result<Self, !> {
+        let args = Args::parse();
+        args.validate()?;
+
+        Ok(args)
     }
 
-    pub fn check(self) -> Result<Self, AppError> {
+    fn validate(&self) -> Result<(), !> {
+        let mut cmd = Args::command();
+
         if let Some(filter) = &self.filter {
-            jmespath::compile(filter)?;
+            Args::validate_jmespath(
+                "filter", filter, &mut cmd,
+            )?
         }
 
         if let Some(sort_expr) = &self.sort_by {
-            jmespath::compile(sort_expr)?;
+            Args::validate_jmespath(
+                "sort expression",
+                &sort_expr,
+                &mut cmd,
+            )?
         }
 
         if let Some(from) = &self.from {
-            println!("FROM: {}", from);
-            Date::parse(from, format_description!("[year]-[month]-[day]")).map_err(|err| AppError::DateCheckError(format!("Could not parse 'from' value. String should be valid ISO_8601 standard. Error: {}", err)))?;
+            Args::validate_date("from", from, &mut cmd)?;
         }
 
         if let Some(to) = &self.to {
-            Date::parse(to, format_description!("[year]-[month]-[day]")).map_err(|_| AppError::DateCheckError(String::from("Could not parse 'to' value. String should be valid ISO_8601 standard")))?;
+            Args::validate_date("to", to, &mut cmd)?;
         }
 
-        Ok(self)
+        if let Some(jobs) = &self.jobs {
+            Args::validate_num_of_jobs(jobs, &mut cmd)?;
+        }
+
+        Ok(())
     }
 
-    pub fn parse_args(&'_ self) -> ParsedArgs<'_> {
-        ParsedArgs {
+    fn validate_jmespath(
+        name: &str,
+        expr: &str,
+        cmd: &mut Command,
+    ) -> Result<(), !> {
+        let comp_res = jmespath::compile(expr);
+
+        if let Err(comp_err) = comp_res {
+            cmd.error(
+                ErrorKind::InvalidValue,
+                format!(
+                    "{} is not a valid JMESPATH. {}",
+                    name, comp_err
+                ),
+            )
+            .exit()
+        }
+
+        Ok(())
+    }
+
+    fn validate_date(
+        name: &str,
+        expr: &str,
+        cmd: &mut Command,
+    ) -> Result<(), !> {
+        if let Err(err) = Date::parse(
+            expr,
+            format_description!("[year]-[month]-[day]"),
+        ) {
+            cmd.error(
+                    ErrorKind::InvalidValue,
+                    format!(
+                        "Arg {} is invalid.String should be valid ISO_8601 standard. Error: {}",
+                        name,
+                        err.to_string()
+                    ),
+                )
+                .exit()
+        }
+
+        Ok(())
+    }
+
+    fn validate_num_of_jobs(
+        jobs: &NonZeroUsize,
+        cmd: &mut Command,
+    ) -> Result<(), !> {
+        if let Ok(cpus) =
+            std::thread::available_parallelism()
+            && cpus < *jobs
+        {
+            cmd.error(
+                ErrorKind::ValueValidation,
+                format!(
+                    "number of jobs should be less than thread::available_parallelism. Available: {}",
+                    cpus
+                    )
+                ).exit()
+        }
+
+        Ok(())
+    }
+
+    pub fn parse_args(
+        &'_ self
+    ) -> Result<ParsedArgs<'_>, AppError> {
+        let available_cpus = get_available_cpus_count()?;
+
+        Ok(ParsedArgs {
             dirs: self.dirs.clone(),
             from: get_from_date(self),
             to: get_to_date(self),
             filter: get_filter_exp(self),
             sort_by: get_sort_exp(self),
-        }
+            jobs: self.jobs.unwrap_or(available_cpus),
+        })
     }
 }
