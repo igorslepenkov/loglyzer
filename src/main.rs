@@ -1,4 +1,4 @@
-use loglyzer::{report_error, run, AppError};
+use loglyzer::{AppError, report_error, run};
 use std::process::exit;
 
 fn main() {

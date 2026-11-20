@@ -37,4 +37,7 @@ pub enum AppError {
 
     #[error("Invalid number of jobs: {0}")]
     JobsCheckError(String),
+
+    #[error("Could not sort by value: {0}")]
+    InvalidSortingKey(String),
 }

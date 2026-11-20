@@ -48,6 +48,15 @@ pub struct Args {
     /// Default - thread::available_parallelism
     #[arg(short, long)]
     pub jobs: Option<NonZeroUsize>,
+
+    /// Should we print compact version of output
+    /// without prettyfying or not
+    #[arg(short, long, default_value_t = false)]
+    pub compact: bool,
+
+    /// Should we even print result or not (for benchmarking)
+    #[arg(short, long, default_value_t = false)]
+    pub quiete: bool,
 }
 
 pub struct ParsedArgs<'a> {
@@ -62,6 +71,10 @@ pub struct ParsedArgs<'a> {
     pub sort_by: Option<Expression<'a>>,
 
     pub jobs: NonZeroUsize,
+
+    pub compact: bool,
+
+    pub quiete: bool,
 }
 
 impl Args {
@@ -180,6 +193,8 @@ impl Args {
             filter: get_filter_exp(self),
             sort_by: get_sort_exp(self),
             jobs: self.jobs.unwrap_or(available_cpus),
+            compact: self.compact,
+            quiete: self.quiete,
         })
     }
 }

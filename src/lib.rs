@@ -1,292 +1,34 @@
-use rayon::prelude::*;
 mod args;
 mod errors;
+mod file_processing;
+mod sort_key;
 mod styler;
 mod utils;
 
-use crossbeam::channel::unbounded;
-use std::{
-    fs::{self, File, ReadDir},
-    io::{BufReader, prelude::*},
-    path::PathBuf,
-    sync::Arc,
-    thread::scope,
-};
-
 pub use errors::AppError;
-use jmespath::Expression;
-use serde_json::Value;
 
 use crate::styler::print_prittified_logs;
-use crate::{
-    args::{Args, ParsedArgs},
-    utils::{check_dir_existence, get_file_created_date},
-};
+use crate::{args::Args, file_processing::get_log_lines};
 
 pub use crate::utils::report_error;
-
-type FileProcessingResult = Vec<String>;
 
 pub fn run() -> Result<(), errors::AppError> {
     let args = Args::init().unwrap();
 
     let args = args.parse_args()?;
 
-    let sort_expr = Arc::new(args.sort_by.clone());
+    let all_lines =
+        get_log_lines(&args, &args.filter, &args.sort_by);
 
-    let mut all_lines = get_log_lines(&args, &args.filter);
-
-    if let Some(ref sort_expr) = *sort_expr {
-        all_lines.sort_by(|a, b| {
-            let val_a =
-                serde_json::from_str::<Value>(a).ok();
-            let val_b =
-                serde_json::from_str::<Value>(b).ok();
-
-            let key_a = val_a.as_ref().and_then(|v| {
-                sort_expr.search(v.clone()).ok()
-            });
-            let key_b = val_b.as_ref().and_then(|v| {
-                sort_expr.search(v.clone()).ok()
-            });
-
-            key_a.cmp(&key_b)
-        });
+    if !args.quiete {
+        if args.compact {
+            for line in all_lines {
+                println!("{}", line);
+            }
+        } else {
+            print_prittified_logs(all_lines);
+        }
     }
-
-    print_prittified_logs(all_lines);
 
     Ok(())
-}
-
-fn process_log_file(
-    path: &PathBuf,
-    filter: &Option<Expression>,
-) -> Result<FileProcessingResult, AppError> {
-    println!("Processing {}", path.to_string_lossy());
-
-    let file = File::open(&path)?;
-    let file_reader: Box<dyn BufRead> =
-        if path.extension().and_then(|s| s.to_str())
-            == Some("gz")
-        {
-            Box::new(BufReader::new(
-                flate2::read::GzDecoder::new(file),
-            ))
-        } else {
-            Box::new(BufReader::new(file))
-        };
-
-    let mut filtered_lines: Vec<String> = Vec::new();
-
-    if let Some(filter) = filter.as_ref() {
-        for line_res in file_reader.lines() {
-            let line = line_res?;
-
-            if line.is_empty() {
-                continue;
-            }
-
-            match jmespath::Variable::from_json(&line) {
-                Ok(value) => {
-                    if let Ok(search_res) =
-                        filter.search(value)
-                    {
-                        if let Some(true) =
-                            search_res.as_boolean()
-                        {
-                            filtered_lines.push(line);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    } else {
-        filtered_lines = file_reader
-            .lines()
-            .flat_map(|res| res)
-            .collect();
-    }
-
-    Ok(filtered_lines)
-}
-
-fn filter_log_files(
-    files: ReadDir,
-    args: &ParsedArgs,
-) -> Vec<PathBuf> {
-    let filtered = files
-        .filter_map(|item| item.ok())
-        .filter_map(|entry| {
-            if entry.path().is_file() {
-                Some(entry.path())
-            } else {
-                None
-            }
-        })
-        .filter_map(|file| {
-            let path_str = file.to_string_lossy();
-
-            if path_str.ends_with(".log")
-                || path_str.ends_with(".log.gz")
-            {
-                Some(file)
-            } else {
-                None
-            }
-        });
-
-    match (&args.from, &args.to) {
-        (Some(from), Some(to)) => filtered
-            .filter(|file| {
-                let created = get_file_created_date(file);
-
-                match created {
-                    Some(created) => {
-                        created.gt(from) && created.le(to)
-                    }
-                    None => false,
-                }
-            })
-            .collect(),
-        (Some(from), None) => filtered
-            .filter(|file| {
-                let created = get_file_created_date(file);
-
-                match created {
-                    Some(created) => created.gt(from),
-                    None => false,
-                }
-            })
-            .collect(),
-        (None, Some(to)) => filtered
-            .filter(|file| {
-                let created = get_file_created_date(file);
-
-                match created {
-                    Some(created) => created.le(to),
-                    None => false,
-                }
-            })
-            .collect(),
-
-        (None, None) => filtered.collect(),
-    }
-}
-
-fn get_log_lines(
-    args: &ParsedArgs,
-    filter: &Option<Expression>,
-) -> Vec<String> {
-    let mut files: Vec<PathBuf> = args
-        .dirs
-        .par_iter()
-        .flat_map(|dir| {
-            let mut files_vec: Vec<PathBuf> = vec![];
-
-            if let Err(err) = check_dir_existence(dir) {
-                report_error(err.to_string(), None);
-                return vec![];
-            }
-
-            let entries_iter_res = fs::read_dir(dir);
-
-            match entries_iter_res {
-                Ok(iter) => files_vec
-                    .extend(filter_log_files(iter, &args)),
-                Err(err) => {
-                    report_error(err.to_string(), None);
-                }
-            }
-
-            files_vec
-        })
-        .collect();
-
-    let jobs = args.jobs.get();
-    if jobs > 1 {
-        process_files_concurrently(&mut files, jobs, filter)
-    } else {
-        process_files(&mut files, filter)
-    }
-}
-
-fn process_files_concurrently(
-    files: &mut Vec<PathBuf>,
-    jobs: usize,
-    filter: &Option<Expression>,
-) -> Vec<String> {
-    let (result_sender, result_receiver) =
-        unbounded::<FileProcessingResult>();
-    let (task_sender, task_receiver) =
-        unbounded::<PathBuf>();
-
-    for path in files.drain(..) {
-        if task_sender.send(path).is_err() {
-            break;
-        }
-    }
-    drop(task_sender);
-
-    scope(|scope| {
-        for _ in 0..jobs {
-            let thread_task_receiver =
-                task_receiver.clone();
-            let thread_result_sender =
-                result_sender.clone();
-
-            scope.spawn(move || {
-                while let Ok(file_path) = thread_task_receiver.recv() {
-                    match process_log_file(&file_path, filter) {
-                        Ok(res) => {
-                            if !res.is_empty() {
-                                if thread_result_sender.send(res).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            report_error(
-                                format!("Error processing file {}", &file_path.to_string_lossy()),
-                                Some(err.to_string()),
-                            );
-                        }
-                    }
-                }
-            });
-        }
-    });
-
-    drop(result_sender);
-
-    result_receiver.iter().flatten().collect()
-}
-
-fn process_files(
-    files: &mut Vec<PathBuf>,
-    filter: &Option<Expression>,
-) -> Vec<String> {
-    let mut result: Vec<String> = Vec::new();
-
-    for file_path in files {
-        match process_log_file(&file_path, filter) {
-            Ok(res) => {
-                if !res.is_empty() {
-                    result.extend(res);
-                }
-            }
-            Err(err) => {
-                report_error(
-                    format!(
-                        "Error processing file {}",
-                        &file_path.to_string_lossy()
-                    ),
-                    Some(err.to_string()),
-                );
-            }
-        }
-    }
-
-    result
 }
