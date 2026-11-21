@@ -97,7 +97,7 @@ impl Args {
         if let Some(sort_expr) = &self.sort_by {
             Args::validate_jmespath(
                 "sort expression",
-                &sort_expr,
+                sort_expr,
                 &mut cmd,
             )?
         }
@@ -152,7 +152,7 @@ impl Args {
                     format!(
                         "Arg {} is invalid.String should be valid ISO_8601 standard. Error: {}",
                         name,
-                        err.to_string()
+                        err
                     ),
                 )
                 .exit()

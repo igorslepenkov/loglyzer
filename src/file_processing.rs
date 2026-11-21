@@ -38,7 +38,7 @@ pub fn get_log_lines(
 
             match entries_iter_res {
                 Ok(iter) => files_vec
-                    .extend(filter_log_files(iter, &args)),
+                    .extend(filter_log_files(iter, args)),
                 Err(err) => {
                     report_error(err.to_string(), None);
                 }
@@ -93,15 +93,13 @@ fn process_files_concurrently(
                 while let Ok(file_path) = thread_task_receiver.recv() {
                     match process_log_file(&file_path, filter, sort) {
                         Ok(res) => {
-                            if !res.is_empty() {
-                                if thread_result_sender.send(res).is_err() {
-                                    break;
-                                }
+                            if !res.is_empty() &&  thread_result_sender.send(res).is_err(){
+                                break;
                             }
                         }
                         Err(err) => {
                             report_error(
-                                format!("Error processing file {}", &file_path.to_string_lossy()),
+                                format!("Error processing file {}", file_path.to_string_lossy()),
                                 Some(err.to_string()),
                             );
                         }
@@ -124,7 +122,7 @@ fn process_files(
     let mut result: FileProcessingResult = Vec::new();
 
     for file_path in files {
-        match process_log_file(&file_path, filter, sort) {
+        match process_log_file(file_path, filter, sort) {
             Ok(res) => {
                 if !res.is_empty() {
                     result.extend(res);
@@ -134,7 +132,7 @@ fn process_files(
                 report_error(
                     format!(
                         "Error processing file {}",
-                        &file_path.to_string_lossy()
+                        file_path.to_string_lossy()
                     ),
                     Some(err.to_string()),
                 );
@@ -150,7 +148,7 @@ fn process_log_file(
     filter: &Option<Expression>,
     sort: &Option<Expression>,
 ) -> Result<FileProcessingResult, AppError> {
-    let file = File::open(&path)?;
+    let file = File::open(path)?;
     let mut file_reader: Box<dyn BufRead> =
         if path.extension().and_then(|s| s.to_str())
             == Some("gz")
@@ -172,7 +170,6 @@ fn get_file_lines(
 ) -> Result<FileProcessingResult, AppError> {
     reader
         .lines()
-        .into_iter()
         .filter_map::<Result<(String, Option<SortKey>), AppError>, _>(
             |line_res| {
                 let line = match line_res {
@@ -188,7 +185,7 @@ fn get_file_lines(
                     match get_variable_from_json(&line) {
                         Ok(var) => {
                             if line_passes_filter(
-                                &var, &filter,
+                                &var, filter,
                             ) {
                                 if let Some(sort_expr) =
                                     sort
@@ -259,17 +256,17 @@ fn line_passes_filter(
     line: &Variable,
     filter: &Expression,
 ) -> bool {
-    if let Ok(search_res) = filter.search(line) {
-        if let Some(as_boolean) = search_res.as_boolean() {
-            return as_boolean;
-        }
+    if let Ok(search_res) = filter.search(line)
+        && let Some(as_boolean) = search_res.as_boolean()
+    {
+        return as_boolean;
     }
 
     false
 }
 
 fn get_variable_from_json(
-    json: &String
+    json: &str
 ) -> Result<Variable, String> {
     jmespath::Variable::from_json(json)
 }

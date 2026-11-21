@@ -30,47 +30,35 @@ pub fn get_available_cpus_count()
 pub fn get_filter_exp(
     args: &Args
 ) -> Option<Expression<'_>> {
-    match &args.filter {
-        Some(string) => {
-            Some(jmespath::compile(string).unwrap())
-        }
-        None => None,
-    }
+    args.filter
+        .as_ref()
+        .map(|string| jmespath::compile(string).unwrap())
 }
 
 pub fn get_sort_exp(args: &Args) -> Option<Expression<'_>> {
-    match &args.sort_by {
-        Some(string) => {
-            Some(jmespath::compile(string).unwrap())
-        }
-        None => None,
-    }
+    args.sort_by
+        .as_ref()
+        .map(|string| jmespath::compile(string).unwrap())
 }
 
 pub fn get_to_date(args: &Args) -> Option<Date> {
-    match &args.to {
-        Some(date_string) => Some(
-            Date::parse(
-                date_string,
-                format_description!("[year]-[month]-[day]"),
-            )
-            .unwrap(),
-        ),
-        None => None,
-    }
+    args.to.as_ref().map(|date_string| {
+        Date::parse(
+            date_string,
+            format_description!("[year]-[month]-[day]"),
+        )
+        .unwrap()
+    })
 }
 
 pub fn get_from_date(args: &Args) -> Option<Date> {
-    match &args.from {
-        Some(date_string) => Some(
-            Date::parse(
-                date_string,
-                format_description!("[year]-[month]-[day]"),
-            )
-            .unwrap(),
-        ),
-        None => None,
-    }
+    args.from.as_ref().map(|date_string| {
+        Date::parse(
+            date_string,
+            format_description!("[year]-[month]-[day]"),
+        )
+        .unwrap()
+    })
 }
 
 pub fn get_file_created_date(
@@ -99,11 +87,11 @@ pub fn get_file_created_date(
 pub fn check_dir_existence(
     dir: &PathBuf
 ) -> Result<(), AppError> {
-    let check = fs::exists(&dir);
+    let check = fs::exists(dir);
 
     match check {
             Ok(res) => {
-                if res == false {
+                if !res {
                     return Err(AppError::DirectoryNotFound(dir.to_string_lossy().to_string()))
                 }
 
